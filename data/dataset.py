@@ -127,7 +127,7 @@ class PaperNbrSampler(dgl.dataloading.Sampler):
         return positive_pairs
 
     def sample_negative_author_pairs(self,graph,sample_per_graph):
-        
+        #Nodes of individual graphs are ordered by (graph,nodeID in graph) and then given one grand ordering which is what we use here. 
         anodes=graph.nodes(ntype='author')
         cntauth=graph.batch_num_nodes('author')
         num_graphs=cntauth.shape[0]
