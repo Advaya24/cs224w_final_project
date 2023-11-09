@@ -2,6 +2,7 @@ from ogb.nodeproppred import DglNodePropPredDataset
 import dgl
 import torch
 import numpy as np
+from dgl import AddReverse, Compose, ToSimple
 
 dataset = DglNodePropPredDataset(name = "ogbn-mag", root = 'dataset/')
 graph,labels=dataset[0]
@@ -107,7 +108,7 @@ def sample_positive_negative_author(graph,author_node_id, k_hops=3, khop_weights
         for hop in range(1,khop):
             nodes = nodes.difference(author_nodes[hop])
         author_nodes[khop] = nodes
-
+    print(sampled_graphs)
     # sample an author node with weight by hop
     hop = np.random.choice(range(1,k_hops+1),p=khop_weights)
     other_author_node_id = np.random.choice(list(author_nodes[hop]))
@@ -121,8 +122,53 @@ def sample_positive_negative_author(graph,author_node_id, k_hops=3, khop_weights
 
 
 
-print(sample_positive_negative_author(graph,author_node_id))
+# print(sample_positive_negative_author(train_graph,author_node_id))
+# print(sample_positive_negative_author(train_graph,author_node_id, 4, [0, 0.7, 0.2, 0.1]))
 
 
+# dgl dataloader using graph and train_idx
+def prepare_data(device):
+    dataset = DglNodePropPredDataset(name="ogbn-mag")
+    split_idx = dataset.get_idx_split()
+    # graph: dgl graph object, label: torch tensor of shape (num_nodes, num_tasks)
+    g, labels = dataset[0]
+    labels = labels["paper"].flatten()
 
+    transform = Compose([ToSimple(), AddReverse()])
+    g = transform(g)
+
+    # print("Loaded graph: {}".format(g))
+
+    # train sampler
+    negative_sampler = dgl.dataloading.negative_sampler.Uniform(5)
+    sampler = dgl.dataloading.MultiLayerNeighborSampler([4, 4])
+    # sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
+    sampler = dgl.dataloading.as_edge_prediction_sampler(
+        sampler, negative_sampler=negative_sampler
+    )
+    num_workers = 0
+    train_masks = {etype: (torch.randperm(g.number_of_edges(etype)) < 0.8 * g.number_of_edges()).to(torch.int64) for etype in g.etypes}
+    train_loader = dgl.dataloading.DataLoader(
+        g,
+        train_masks,
+        sampler,
+        batch_size=128,
+        shuffle=True,
+        num_workers=num_workers,
+        device=device,
+    )
+
+    return g, labels, dataset.num_classes, split_idx, train_loader
+
+g, labels, dataset.num_classes, split_idx, train_loader = prepare_data('cpu')
+# print(g)
+count = 0
+for i, (input_nodes, positive_graph, negative_graph, blocks) in enumerate(train_loader):
+    print(input_nodes)
+    print(positive_graph)
+    print(negative_graph)
+    print(blocks)
+    count += 1
+    if count >= 1:
+        break
 
