@@ -98,9 +98,10 @@ def sample_author_pairs(graph,num_samples=100):
 
 def sample_positive_negative_author(graph,author_node_id, k_hops=3, khop_weights = [0, 0.75, 0.25]):
     author_nodes = {}
-    
+    sampled_graphs = {}
     for khop in range(1,k_hops+1):
         sampled_graph,inv_edges=dgl.khop_subgraph(graph,{'author':[author_node_id]},khop)
+        sampled_graphs[khop] = sampled_graph
         nodes = set(sampled_graph.nodes('author').tolist())
         # nodes.remove(author_node_id)
         for hop in range(1,khop):
@@ -110,7 +111,7 @@ def sample_positive_negative_author(graph,author_node_id, k_hops=3, khop_weights
     # sample an author node with weight by hop
     hop = np.random.choice(range(1,k_hops+1),p=khop_weights)
     other_author_node_id = np.random.choice(list(author_nodes[hop]))
-    positive = sampled_graph.ndata[dgl.NID]['author'][other_author_node_id]
+    positive = sampled_graphs[khop].ndata[dgl.NID]['author'][other_author_node_id]
     negatives = set(graph.nodes('author').tolist()).difference(sampled_graph.ndata[dgl.NID]['author'])
     negative = np.random.choice(list(negatives))
     return (author_node_id, positive.item()), (author_node_id, negative)
