@@ -1,10 +1,10 @@
 def khop_subgraph(
     graph, nodes, k, *, relabel_nodes=True, store_ids=True, output_device=None
 ):
-    """Return the subgraph induced by k-hop out-neighborhood of the specified node(s).
+    """Return the subgraph induced by k-hop neighborhood of the specified node(s).
 
-    We can expand a set of nodes by including the successors of them. From a
-    specified node set, a k-hop out subgraph is obtained by first repeating the node set
+    We can expand a set of nodes by including the successors and predecessor of them. From a
+    specified node set, a k-hop subgraph is obtained by first repeating the node set
     expansion for k times and then creating a node induced subgraph. In addition to
     extracting the subgraph, DGL also copies the features of the extracted nodes and
     edges to the resulting graph. The copy is *lazy* and incurs data movement only
@@ -51,58 +51,6 @@ def khop_subgraph(
         The new IDs of the input :attr:`nodes` after node relabeling. This is returned
         only when :attr:`relabel_nodes` is True. It is in the same form as :attr:`nodes`.
 
-    Notes
-    -----
-
-    When k is 1, the result subgraph is different from the one obtained by
-    :func:`dgl.out_subgraph`. The 1-hop out subgraph also includes the edges
-    among the neighborhood.
-
-    Examples
-    --------
-    The following example uses PyTorch backend.
-
-    >>> import dgl
-    >>> import torch
-
-    Extract a two-hop subgraph from a homogeneous graph.
-
-    >>> g = dgl.graph(([0, 2, 0, 4, 2], [1, 1, 2, 3, 4]))
-    >>> g.edata['w'] = torch.arange(10).view(5, 2)
-    >>> sg, inverse_indices = dgl.khop_out_subgraph(g, 0, k=2)
-    >>> sg
-    Graph(num_nodes=4, num_edges=4,
-          ndata_schemes={'_ID': Scheme(shape=(), dtype=torch.int64)}
-          edata_schemes={'w': Scheme(shape=(2,), dtype=torch.int64),
-                         '_ID': Scheme(shape=(), dtype=torch.int64)})
-    >>> sg.edges()
-    (tensor([0, 0, 2, 2]), tensor([1, 2, 1, 3]))
-    >>> sg.edata[dgl.EID]  # original edge IDs
-    tensor([0, 2, 1, 4])
-    >>> sg.edata['w']  # also extract the features
-    tensor([[0, 1],
-            [4, 5],
-            [2, 3],
-            [8, 9]])
-    >>> inverse_indices
-    tensor([0])
-
-    Extract a subgraph from a heterogeneous graph.
-
-    >>> g = dgl.heterograph({
-    ...     ('user', 'plays', 'game'): ([0, 1, 1, 2], [0, 0, 2, 1]),
-    ...     ('user', 'follows', 'user'): ([0, 1], [1, 3])})
-    >>> sg, inverse_indices = dgl.khop_out_subgraph(g, {'user': 0}, k=2)
-    >>> sg
-    Graph(num_nodes={'game': 2, 'user': 3},
-          num_edges={('user', 'follows', 'user'): 2, ('user', 'plays', 'game'): 2},
-          metagraph=[('user', 'user', 'follows'), ('user', 'game', 'plays')])
-    >>> inverse_indices
-    {'user': tensor([0])}
-
-    See also
-    --------
-    khop_in_subgraph
     """
     if graph.is_block:
         raise DGLError("Extracting subgraph of a block graph is not allowed.")
