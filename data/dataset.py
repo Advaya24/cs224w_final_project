@@ -3,14 +3,15 @@ import dgl
 import torch
 import numpy as np
 from dgl import AddReverse, Compose, ToSimple
-
+from dgl.nn import SAGEConv
+from tqdm import tqdm
+from numpy.random import default_rng
 dataset = DglNodePropPredDataset(name = "ogbn-mag", root = 'dataset/')
 graph,labels=dataset[0]
 split_idx = dataset.get_idx_split()
 train_idx, valid_idx, test_idx = split_idx["train"], split_idx["valid"], split_idx["test"]
 
-
-
+valid_idx['paper']=[x for x in valid_idx['paper'] if len(graph.predecessors(x,etype='writes'))>1]
 # g = dgl.heterograph({('user', 'plays', 'game'): ([0, 1, 1, 2], [0, 0, 2, 1]),('user', 'follows', 'user'): ([0, 1], [1, 3])})
 # sg, inverse_indices = dgl.khop_subgraph(g, {'game': 0}, k=2)
 
@@ -20,19 +21,13 @@ paper_node_id=10
 author_node_id=100
 # Apply the mask to the original graph
 train_graph= dgl.remove_nodes(graph, valid_idx['paper'],ntype='paper')
-train_graph= dgl.remove_nodes(train_graph, train_graph.nodes('institution'),ntype='institution')
-train_graph= dgl.remove_nodes(train_graph, train_graph.nodes('field_of_study'),ntype='field_of_study')
+# train_graph= dgl.remove_nodes(train_graph, train_graph.nodes('institution'),ntype='institution')
+# train_graph= dgl.remove_nodes(train_graph, train_graph.nodes('field_of_study'),ntype='field_of_study')
 
 # remove institute nodes
 # print(train_graph)
 # train_graph = dgl.remove_nodes(graph, graph.nodes('institution'),ntype='institution')
 # train_graph= dgl.remove_nodes(train_graph, graph
-
-
-# out_sampled_graph = dgl.sampling.sample_neighbors(train_graph, {'paper':[paper_node_id]},k_hops,edge_dir ='out'  )
-# in_sampled_graph = dgl.sampling.sample_neighbors(train_graph, {'paper':[paper_node_id]},k_hops,edge_dir ='in' )
-# merged_graph=dgl.merge([out_sampled_graph, in_sampled_graph])
-
 
 
 def sample_author_pairs(graph,num_samples=100):
@@ -73,10 +68,6 @@ def sample_author_pairs(graph,num_samples=100):
     return positive_pairs,negative_pairs
 
 
-# sample_author_pairs_full_random(dgl.khop_subgraph(graph,{'paper':[paper_node_id]},4)[0])
-
-
-
 def sample_positive_negative_author(graph,author_node_id, k_hops=3, khop_weights = [0, 0.75, 0.25]):
     author_nodes = {}
     sampled_graphs = {}
@@ -115,6 +106,8 @@ class PaperNbrSampler(dgl.dataloading.Sampler):
         while cfiller<(positive_pairs.shape[0]):
             source=np.random.choice(anodes)
             papers=graph.successors(source,etype='writes')
+            if len(papers)==0:
+                continue
             paper=np.random.choice(papers)
             writers=graph.predecessors(paper,etype='writes')
             for writer in writers:
@@ -139,7 +132,6 @@ class PaperNbrSampler(dgl.dataloading.Sampler):
             idx2fillfrom+=cntauth[i]
         return negative_pairs
 
-
     def sample(self,graph,indices):
         #g is full graph. indices are the train paper nodes in curent mini batch
         subgraphs=[]
@@ -147,70 +139,180 @@ class PaperNbrSampler(dgl.dataloading.Sampler):
             sg=dgl.khop_subgraph(graph,{'paper':[paper]},self.khops)[0]
             subgraphs.append(sg)
         mini_batch=dgl.batch(subgraphs)
-        positive_pairs=self.sample_positive_author_pairs(mini_batch,self.num_author_pair)
-        negative_pairs=self.sample_negative_author_pairs(mini_batch,self.num_author_pair)
-        return mini_batch,positive_pairs,negative_pairs
+        positive_pairs=None#self.sample_positive_author_pairs(mini_batch,self.num_author_pair)
+        negative_pairs=None#self.sample_negative_author_pairs(mini_batch,self.num_author_pair)
+        return mini_batch#,positive_pairs,negative_pairs
+
+
+
+
+class ValPaperNbrSampler(dgl.dataloading.Sampler):
+    def __init__(self,khops):
+        super().__init__()
+        self.khops=khops
+
+    def sample(self,graph,indices):
+        #g is full graph. It returns the index in indices and the author nodes with which edge exists in reality
+        #returns, OG subgraph, sub graph to do MSG passing on, correct edges 
+        assert indices.shape[0]==1
+        sg,invlabel=dgl.khop_subgraph(graph,{'paper':[indices[0]]},self.khops)
+        paper_in_subg=invlabel['paper']
+        authors=sg.predecessors(paper_in_subg[0],etype='writes')
+        author_to_del=authors[:-1]
+        edge_ids_to_del=sg.edge_ids(author_to_del,paper_in_subg.repeat(len(author_to_del)),etype='writes')
+        sg_model_inp=dgl.remove_edges(sg, edge_ids_to_del,etype='writes')
+        sg_to_pred=sg
+        for etype in sg.etypes:
+            sg_to_pred=dgl.remove_edges(sg_to_pred, sg.edges(form='eid',etype=etype),etype=etype)
+        all_authors=sg.nodes('author')
+        sg_to_pred.add_edges(all_authors,paper_in_subg.repeat(len(all_authors)),etype='writes')
+        return sg_model_inp,sg_to_pred,invlabel['paper'][0],author_to_del
+        #we want to pass sg_del through the model and see performance on edge_ids_to_del edes of sg
 
 
 coauth_train_loader = dgl.dataloading.DataLoader(
         train_graph,
         train_graph.nodes('paper'),
-        PaperNbrSampler(2,2),
-        batch_size=16,
+        PaperNbrSampler(2,k_hops),
+        batch_size=8,
+        shuffle=True,
+        num_workers=0,
+        device='cpu',
+    )
+
+coauth_val_loader = dgl.dataloading.DataLoader(
+        graph,
+        valid_idx['paper'],
+        ValPaperNbrSampler(k_hops),
+        batch_size=1,
         shuffle=True,
         num_workers=0,
         device='cpu',
     )
 
 
-# print(sample_positive_negative_author(train_graph,author_node_id))
-# print(sample_positive_negative_author(train_graph,author_node_id, 4, [0, 0.7, 0.2, 0.1]))
+def find_node_ids(node_type_list,num_node_func,node_type,node_ids):
+    i=0
+    ans=torch.clone(node_ids)
+    while node_type_list[i]!=node_type:
+        ans+=num_node_func(node_type_list[i])
+        i+=1
+    return ans
 
 
-# dgl dataloader using graph and train_idx
-# def prepare_data(device):
-#     dataset = DglNodePropPredDataset(name="ogbn-mag")
-#     split_idx = dataset.get_idx_split()
-#     # graph: dgl graph object, label: torch tensor of shape (num_nodes, num_tasks)
-#     g, labels = dataset[0]
-#     labels = labels["paper"].flatten()
 
-#     transform = Compose([ToSimple(), AddReverse()])
-#     g = transform(g)
+def validate(model,val_loader):
+    #We predict the as many authors as there are actually, and then we see how many are correct
+    model.eval()
+    recalls=[]
+    for i, (subg_inp,sg_to_pred,paper,authors) in enumerate(val_loader):
+        # print(input_nodes)
+        if i>50:
+            break
+        paper_node_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'paper',paper)
+        author_node_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'author',authors)
 
-#     # print("Loaded graph: {}".format(g))
+        subg_pred_homo=dgl.to_homogeneous(sg_to_pred)
+        subg_inp_homo=dgl.to_homogeneous(subg_inp)
+        sub_pred_undir=dgl.add_reverse_edges(subg_pred_homo)
+        sub_inp_undir=dgl.add_reverse_edges(subg_inp_homo)
 
-#     # train sampler
-#     negative_sampler = dgl.dataloading.negative_sampler.Uniform(5)
-#     sampler = dgl.dataloading.MultiLayerNeighborSampler([4, 4])
-#     # sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
-#     sampler = dgl.dataloading.as_edge_prediction_sampler(
-#         sampler, negative_sampler=negative_sampler
-#     )
-#     num_workers = 0
-#     train_masks = {etype: (torch.randperm(g.number_of_edges(etype)) < 0.8 * g.number_of_edges()).to(torch.int64) for etype in g.etypes}
-#     train_loader = dgl.dataloading.DataLoader(
-#         g,
-#         train_masks,
-#         sampler,
-#         batch_size=128,
-#         shuffle=True,
-#         num_workers=num_workers,
-#         device=device,
-#     )
+        node_feats=torch.zeros((subg_pred_homo.num_nodes(),len(subg_inp.ntypes))) #one hot encoding of node type
+        node_feats[torch.arange(subg_pred_homo.num_nodes()),subg_pred_homo.ndata['_TYPE']]=1
+        edge_ids_to_predict=sub_pred_undir.edge_ids(author_node_homo,paper_node_homo.repeat(len(author_node_homo)))
 
-#     return g, labels, dataset.num_classes, split_idx, train_loader
+        op=model(sub_inp_undir,None,node_feats,sub_pred_undir)
+        op=op[:(op.shape[0]//2)] #because symmetric edges
+        recall_k=authors.shape[0]
+        ###Recall@K#####
+        pred_edges=torch.topk(op[:,0],recall_k)[1]
+        pred_authors=sub_pred_undir.edges()[0][pred_edges]
+        # recalls.append(np.intersect1d(pred_authors,authors).shape[0]/authors.shape[0])
+        recalls.append(np.intersect1d(pred_authors,authors).shape[0]/recall_k)
 
-# g, labels, dataset.num_classes, split_idx, train_loader = prepare_data('cpu')
-# print(g)
-count = 0
-for i, (subg, ppair, npair) in enumerate(coauth_train_loader):
+    return np.mean(recalls)
+    
+
+class DotProductPredictor(torch.nn.Module):
+    def forward(self, graph, h):
+        # h contains the node representations computed from the GNN defined
+        # in the node classification section (Section 5.1).
+        with graph.local_scope():
+            graph.ndata['h'] = h
+            graph.apply_edges(dgl.function.u_dot_v('h', 'h', 'score'))
+            return graph.edata['score']
+
+def construct_negative_graph(graph, k):
+    src, dst = graph.edges()
+
+    neg_src = src.repeat_interleave(k)
+    neg_dst = torch.randint(0, graph.num_nodes(), (len(src) * k,))
+    return dgl.graph((neg_src, neg_dst), num_nodes=graph.num_nodes())
+
+def construct_input_positive_graph(graph,k):
+    #expects undirected graph
+    #remove k distinct edges, so total 2k removal counting reverse edge
+    rng = default_rng()
+    eids = rng.choice(graph.number_of_edges()//2, size=k, replace=False)
+    eids=np.concatenate([eids,eids+graph.number_of_edges()//2])
+    graph_inp=dgl.remove_edges(graph, eids)
+    graph_pos=dgl.remove_edges(graph,torch.arange(graph.number_of_edges())) #remove all edges
+    src,dst=graph.edges()
+    graph_pos=dgl.add_edges(graph_pos,src[eids],dst[eids])
+    return graph_inp,graph_pos
+    
+
+class Model(torch.nn.Module):
+    def __init__(self, in_features, hidden_features, out_features):
+        super().__init__()
+        # self.sage = SAGE(in_features, hidden_features, out_features)
+        self.sage1=SAGEConv(4, 16, 'mean')
+        self.sage2=SAGEConv(16, 8, 'mean')
+        self.pred = DotProductPredictor()
+    def forward(self, g, neg_g, x,pos_g=None):
+         #g should ont have the edges we want to predict which are there in pos_g. 
+        if pos_g is None:
+            pos_g=g
+        h = self.sage1(g, x)
+        h=self.sage2(g,h)
+        if self.training:
+            return self.pred(pos_g, h), self.pred(neg_g, h)
+        else:
+            return self.pred(pos_g,h)
+
+def compute_loss(pos_score, neg_score):
+    # Margin loss
+    n_edges = pos_score.shape[0]
+    return (1 - pos_score + neg_score.view(n_edges, -1)).clamp(min=0).mean()
+
+
+model = Model(4, 16, 16)
+opt = torch.optim.Adam(model.parameters())
+
+# validate(model,coauth_val_loader)
+# (subg, ppair, npair)    
+for i, (subg) in (pbar:= tqdm(enumerate(coauth_train_loader))):
     # print(input_nodes)
-    # print(positive_graph)
-    # print(negative_graph)
-    # print(blocks)
-    import pdb;pdb.set_trace()
-    # count += 1
-    # if count >= 1:
-    #     break
+    model.train()
+    sub_homo=dgl.to_homogeneous(subg)
+    sub_homo_undir=dgl.add_reverse_edges(sub_homo)
+    node_feats=torch.zeros((subg.num_nodes(),len(subg.ntypes))) #one hot encoding of node type
+    node_feats[torch.arange(subg.num_nodes()),sub_homo_undir.ndata['_TYPE']]=1
+    num_edges_for_loss=sub_homo_undir.number_of_edges()//6 #removing 2/6 of distinct edges using 2/3rd of distinct edegs to classify
+    negative_graph = construct_negative_graph(sub_homo_undir,  num_edges_for_loss)
+    input_graph,positive_graph=construct_input_positive_graph(sub_homo_undir,num_edges_for_loss)
+    pos_score, neg_score = model(input_graph, negative_graph, node_feats,positive_graph)
+    loss = compute_loss(pos_score, neg_score)
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+    pbar.set_description(f"Loss:{loss.item():.4f},Edges:{input_graph.number_of_edges()}")
+    if (i+1)%10==0:
+        print(validate(model,coauth_val_loader))
+    
+    #convert graph to homogenous for link prediction, say subg=dgl.to_hetero(subh)
+    #subg.ntypes gives ['author', 'field_of_study', 'institution', 'paper'] this is mapped to [0,1,2,3]
+    #this info for each node is in subh.ndata['_TYPE'][65]
+    #subr=dgl.add_reverse_edges(subh)
+    #this we do link pred on
 

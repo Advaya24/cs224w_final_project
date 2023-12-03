@@ -1,5 +1,5 @@
 def khop_subgraph(
-    graph, nodes, k, *, relabel_nodes=True, store_ids=True, output_device=None
+    graph, nodes, k, *,fanout=5, relabel_nodes=True, store_ids=True, output_device=None
 ):
     """Return the subgraph induced by k-hop neighborhood of the specified node(s).
 
@@ -79,14 +79,20 @@ def khop_subgraph(
             _, out_nbrs = graph.out_edges(
                 last_hop_nodes.get(srctype, place_holder), etype=cetype
             )
-            current_hop_nodes[dsttype].append(out_nbrs)
+            if fanout<len(out_nbrs):
+                current_hop_nodes[dsttype].append(random.sample(out_nbrs,fanout))
+            else:
+                current_hop_nodes[dsttype].append(out_nbrs)
         # add incoming nbrs
         for cetype in graph.canonical_etypes:
             srctype, _, dsttype = cetype
             in_nbrs, _ = graph.in_edges(
                 last_hop_nodes.get(dsttype, place_holder), etype=cetype
             )
-            current_hop_nodes[srctype].append(in_nbrs)
+            if fanout<len(in_nbrs):
+                current_hop_nodes[srctype].append(random.sample(in_nbrs,fanout))
+            else:
+                current_hop_nodes[srctype].append(in_nbrs)
         for nty in graph.ntypes:
             if len(current_hop_nodes[nty]) == 0:
                 current_hop_nodes[nty] = place_holder
