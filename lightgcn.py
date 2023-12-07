@@ -13,6 +13,55 @@ import random
 
 from evaluate import metrics
 
+class LightGCN2(nn.Module):
+    def __init__(self, args, userNum, item_feat_dim, hide_dim, layerNum=1):
+        super(LightGCN2, self).__init__()
+        self.userNum = userNum
+        self.feat_dim = item_feat_dim
+        self.hide_dim = hide_dim
+        self.layerNum = layerNum
+        self.item_mlp = nn.Sequential(
+            nn.Linear(item_feat_dim, hide_dim),
+            nn.ReLU(),
+            nn.Linear(hide_dim, hide_dim)
+        )
+        self.embedding_dict = self.init_weight(userNum, hide_dim)
+        self.args = args
+
+        self.layers = nn.ModuleList()
+        for i in range(self.layerNum):
+            self.layers.append(GCNLayer())
+    
+    def init_weight(self, userNum, hide_dim):
+        initializer = nn.init.xavier_uniform_
+        embedding_dict = nn.ParameterDict({
+            'user_emb': nn.Parameter(initializer(t.empty(userNum, hide_dim))),
+        })
+        return embedding_dict
+    
+
+    def forward(self, graph, item_feat):
+
+        res_user_embedding = self.embedding_dict['user_emb']
+        # detach the item_feat
+        item_feat = item_feat.detach()
+        res_item_embedding = self.item_mlp(item_feat)
+
+        for i, layer in enumerate(self.layers):
+            if i == 0:
+                embeddings = layer(graph, res_user_embedding, res_item_embedding)
+            else:
+                embeddings = layer(graph, embeddings[: self.userNum], embeddings[self.userNum: ])
+            
+            res_user_embedding = res_user_embedding + embeddings[: self.userNum]*(1/(i+2))
+            res_item_embedding = res_item_embedding + embeddings[self.userNum: ]*(1/(i+2))
+
+        user_embedding = res_user_embedding# / (len(self.layers)+1)
+
+        item_embedding = res_item_embedding# / (len(self.layers)+1)
+
+        return user_embedding, item_embedding
+
 
 class LightGCN(nn.Module):
     def __init__(self, args, userNum, itemNum, hide_dim, layerNum=1):
@@ -105,6 +154,8 @@ if __name__ == '__main__':
     # load ogb data
     dataset = DglNodePropPredDataset(name='ogbn-mag')
     graph, label = dataset[0]
+    paper_n, feat_dim = graph.ndata['feat']['paper'].shape
+    paper_feat = graph.ndata['feat']['paper']
     # only keep ("author", "writes", "paper") relation
     graph = dgl.edge_type_subgraph(graph, [('author', 'writes', 'paper')])
     # split edges into train/valid/test
@@ -152,7 +203,8 @@ if __name__ == '__main__':
     num_author = train_graph.number_of_nodes('author')
     num_paper = train_graph.number_of_nodes('paper')
     print(f"num_author: {num_author}, num_paper: {num_paper}")
-    model = LightGCN(None, num_author, num_paper, 64, 1)
+    # model = LightGCN(None, num_author, num_paper, 64, 1)
+    model = LightGCN2(None, num_author, feat_dim, 64, 1)
     print(f"model: {[param.shape for param in model.parameters()]}")
     # optimizer
     optimizer = t.optim.Adam(model.parameters(), lr=0.05)
@@ -167,7 +219,7 @@ if __name__ == '__main__':
         print(f"Epoch: {epoch}")
         model.train()
         optimizer.zero_grad()
-        author_embeddings, paper_embeddings = model(train_graph)
+        author_embeddings, paper_embeddings = model(train_graph, paper_feat)
         
         # convert pos and neg ids to embeddings
         pos_author_embeddings = author_embeddings[train_pos_u]
@@ -187,7 +239,7 @@ if __name__ == '__main__':
         # validation
         model.eval()
         with t.no_grad():
-            author_embeddings, paper_embeddings = model(valid_graph)
+            author_embeddings, paper_embeddings = model(valid_graph, paper_feat)
             # cosine similarity
             pos_score = t.sum(author_embeddings[valid_pos_u] * paper_embeddings[valid_pos_v], dim=1)
             neg_score = t.sum(author_embeddings[valid_neg_u] * paper_embeddings[valid_neg_v], dim=1)
@@ -199,6 +251,6 @@ if __name__ == '__main__':
     plt.plot(train_loss, label='train')
     plt.plot(valid_loss, label='valid')
     # test
-    model.eval()
-    with t.no_grad():
-        print(metrics(model, test_graph))
+    # model.eval()
+    # with t.no_grad():
+    #     print(metrics(model, test_graph))
