@@ -132,7 +132,7 @@ class GCNLayer(nn.Module):
             return rst
         
 
-def sample_negative_edges(bipartite_graph, num_neg_samples, pos_u, pos_v):
+def sample_negative_edges(bipartite_graph, pos_u, pos_v):
     u = bipartite_graph.nodes('author')
     v = bipartite_graph.nodes('paper')
     
@@ -164,7 +164,7 @@ if __name__ == '__main__':
     train_percent, valid_percent = 0.8, 0.1
     train_size, valid_size, test_size = int(train_percent * len(eids)), int(valid_percent * len(eids)), len(eids) - int(train_percent * len(eids)) - int(valid_percent * len(eids))
     train_eids, valid_eids, test_eids = t.split(eids, [train_size, valid_size, test_size])
-    neg_u, neg_v = sample_negative_edges(graph, len(train_eids), u, v)
+    neg_u, neg_v = sample_negative_edges(graph, u, v)
     train_pos_u, train_pos_v = u[train_eids], v[train_eids]
     valid_pos_u, valid_pos_v = u[valid_eids], v[valid_eids]
     test_pos_u, test_pos_v = u[test_eids], v[test_eids]
@@ -207,7 +207,7 @@ if __name__ == '__main__':
     model = LightGCN2(None, num_author, feat_dim, 64, 1)
     print(f"model: {[param.shape for param in model.parameters()]}")
     # optimizer
-    optimizer = t.optim.Adam(model.parameters(), lr=0.05)
+    optimizer = t.optim.Adam(model.parameters(), lr=0.02)
     train_graph = dgl.to_homogeneous(train_graph)
     valid_graph = dgl.to_homogeneous(valid_graph)
     test_graph = dgl.to_homogeneous(test_graph)
@@ -215,7 +215,7 @@ if __name__ == '__main__':
     valid_loss = []
 
     # train
-    for epoch in range(10):
+    for epoch in range(1):
         print(f"Epoch: {epoch}")
         model.train()
         optimizer.zero_grad()
@@ -251,6 +251,6 @@ if __name__ == '__main__':
     plt.plot(train_loss, label='train')
     plt.plot(valid_loss, label='valid')
     # test
-    # model.eval()
-    # with t.no_grad():
-    #     print(metrics(model, test_graph))
+    model.eval()
+    with t.no_grad():
+        print(metrics(model, valid_graph, test_graph, paper_feat))
