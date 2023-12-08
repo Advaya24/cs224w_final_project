@@ -10,6 +10,7 @@ from ogb.nodeproppred import DglNodePropPredDataset
 import scipy.sparse as sp
 import numpy as np
 import random
+from tqdm import tqdm
 
 from evaluate import metrics
 
@@ -149,10 +150,30 @@ def sample_negative_edges(bipartite_graph, num_neg_samples, pos_u, pos_v):
     negative_edges = list(zip(*negative_edges))
     return t.tensor(negative_edges[0]), t.tensor(negative_edges[1])
 
+def recallK(valid_authors,pos_score,valid_pos_u,neg_score,valid_neg_u,k):
+    #u is author, v is paper
+    recs=[]
+    for author in tqdm(valid_authors):
+        pos_papers=(valid_pos_u==author)
+        neg_papers=(valid_neg_u==author)
+        curr_pos_score=pos_score[pos_papers]
+        curr_neg_score=neg_score[neg_papers]
+
+        num_pos=curr_pos_score.shape[0]
+        all_scores=t.concat([curr_pos_score,curr_neg_score],dim=0)
+        # assert all_scores.shape==(t.sum(pos_papers)+t.sum(neg_papers),)
+        if k>all_scores.shape[0]:
+            continue
+        topk_indices=t.topk(all_scores,k)[1]
+        recs.append((topk_indices<num_pos).sum()/num_pos)
+    print("Fraction of items used:",len(recs)/valid_authors.shape[0])
+    return np.mean(recs)
+
+
 if __name__ == '__main__':
     print("Loading data...")
     # load ogb data
-    dataset = DglNodePropPredDataset(name='ogbn-mag')
+    dataset = DglNodePropPredDataset(name='ogbn-mag',root = 'data/dataset/')
     graph, label = dataset[0]
     paper_n, feat_dim = graph.ndata['feat']['paper'].shape
     paper_feat = graph.ndata['feat']['paper']
@@ -161,7 +182,7 @@ if __name__ == '__main__':
     # split edges into train/valid/test
     u, v = graph.edges()
     eids = t.randperm(graph.number_of_edges())
-    train_percent, valid_percent = 0.8, 0.1
+    train_percent, valid_percent = 0.7, 0.3
     train_size, valid_size, test_size = int(train_percent * len(eids)), int(valid_percent * len(eids)), len(eids) - int(train_percent * len(eids)) - int(valid_percent * len(eids))
     train_eids, valid_eids, test_eids = t.split(eids, [train_size, valid_size, test_size])
     neg_u, neg_v = sample_negative_edges(graph, len(train_eids), u, v)
@@ -188,6 +209,11 @@ if __name__ == '__main__':
     test_pos_v = paper_ids[test_pos_v]
     test_neg_u = author_ids[test_neg_u]
     test_neg_v = paper_ids[test_neg_v]
+
+
+    valid_authors,b1=t.unique(valid_pos_u,return_counts=True)
+    for i in range(5):
+        print((b1>i).sum())
 
 
     # train graph
@@ -244,8 +270,12 @@ if __name__ == '__main__':
             pos_score = t.sum(author_embeddings[valid_pos_u] * paper_embeddings[valid_pos_v], dim=1)
             neg_score = t.sum(author_embeddings[valid_neg_u] * paper_embeddings[valid_neg_v], dim=1)
             loss = -t.mean(t.log(t.sigmoid(pos_score - neg_score)))
-            print(f"Valid Loss: {loss.item()}")
+            
             valid_loss.append(loss.item())
+            val_sample=random.sample(range(valid_authors.shape[0]),10000)
+            recK=recallK(valid_authors[val_sample],pos_score,valid_pos_u,neg_score,valid_neg_u,2)
+            print(f"Valid Loss: {loss.item()}, Recall:{recK}")
+
     
     # plot loss
     plt.plot(train_loss, label='train')
