@@ -1,28 +1,25 @@
 import numpy as np
-import torch
-
-def metrics(model, test_graph):
-    model.eval()
-    auth_emb, paper_emb = model(test_graph)
-    auth_emb = auth_emb.detach().cpu().numpy()
-    paper_emb = paper_emb.detach().cpu().numpy()
-	
-    # get recall@k
-    k = 10
-    recall = []
-    for u in range(model.userNum):
-        # compute the similarity scores
-        auth_emb_u = auth_emb[u]
-        score = np.dot(auth_emb_u, paper_emb.T)
-        # get the top k indices
-        pred = np.argpartition(score, -k)[-k:]
-        # find how many of the top k are in test_graph
-        hit = len(set(pred).intersection(set(test_graph.successors(u).numpy())))
-        recall.append(hit / k)
+import torch as t
+from tqdm import tqdm
 
 
-    recall = np.array(recall).mean()
-    return recall
+def recallK(valid_authors, pos_score, valid_pos_u, neg_score, valid_neg_u, k):
+    # u is author, v is paper
+    recs = []
+    for author in tqdm(valid_authors):
+        pos_papers = (valid_pos_u == author)
+        neg_papers = (valid_neg_u == author)
+        curr_pos_score = pos_score[pos_papers]
+        curr_neg_score = neg_score[neg_papers]
 
-    
-	
+        num_pos = curr_pos_score.shape[0]
+        all_scores = t.cat([curr_pos_score, curr_neg_score], dim=0)
+
+        # assert all_scores.shape == (t.sum(pos_papers) + t.sum(neg_papers),)
+        if k > all_scores.shape[0]:
+            continue
+
+        topk_indices = t.topk(all_scores, k)[1]
+        recs.append((topk_indices < num_pos).sum() / num_pos)
+    print(f"Fraction of items used {len(recs)/valid_authors.shape[0]}")
+    return np.mean(recs)
