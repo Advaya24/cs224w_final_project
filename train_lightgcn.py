@@ -67,7 +67,6 @@ if __name__ == '__main__':
         # validation
         model.eval()
         with t.no_grad():
-            author_embeddings, paper_embeddings = model(valid_graph, paper_feat)
             # cosine similarity
             pos_score = t.sum(author_embeddings[valid_pos_u] * paper_embeddings[valid_pos_v], dim=1)
             neg_score = t.sum(author_embeddings[valid_neg_u] * paper_embeddings[valid_neg_v], dim=1)
@@ -86,7 +85,7 @@ if __name__ == '__main__':
     model.eval()
     with t.no_grad():
         # recall K
-        author_embeddings, paper_embeddings = model(test_graph, paper_feat)
+        author_embeddings, paper_embeddings = model(valid_graph, paper_feat)
         # cosine similarity
         pos_score = t.sum(author_embeddings[test_pos_u] * paper_embeddings[test_pos_v], dim=1)
         neg_score = t.sum(author_embeddings[test_neg_u] * paper_embeddings[test_neg_v], dim=1)
