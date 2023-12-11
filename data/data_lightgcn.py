@@ -63,12 +63,17 @@ def load_data():
 
 
     valid_authors,b1=t.unique(valid_pos_u,return_counts=True)
-    for i in range(5):
-        print((b1>i).sum())
+    # for i in range(5):
+    #     print((b1>i).sum())
+    valid_papers,b1=t.unique(valid_pos_v,return_counts=True)
 
     test_authors,b1=t.unique(test_pos_u,return_counts=True)
-    for i in range(5):
-        print((b1>i).sum())
+    # for i in range(5):
+    #     print((b1>i).sum())
+
+    test_papers,b1=t.unique(test_pos_v,return_counts=True)
+    # for i in range(5):
+    #     print((b1>i).sum())
 
     # train graph
     train_graph = dgl.edge_subgraph(graph, train_eids, relabel_nodes=False)
@@ -106,7 +111,9 @@ def load_data():
         'num_author': num_author,
         'num_paper': num_paper,
         'feat_dim': feat_dim,
-        'valid_authors':valid_authors,
-        'test_authors':test_authors
+        'valid_authors': valid_authors,
+        'test_authors': test_authors, 
+        'valid_papers': valid_papers,
+        'test_papers': test_papers
     }
     return return_dict
