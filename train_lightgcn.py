@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import torch as t
 import random
 from tqdm import tqdm
-from data.data_lightgcn import load_data
+from data.data_lightgcn import load_data, sample_negative_edges
 from evaluate import recallK
 from lightgcn import LightGCN2
 
@@ -16,12 +16,12 @@ if __name__ == '__main__':
     paper_feat = data_dict['paper_feat']
     train_pos_u = data_dict['train_pos_u']
     train_pos_v = data_dict['train_pos_v']
-    train_neg_u = data_dict['train_neg_u']
-    train_neg_v = data_dict['train_neg_v']
+    # train_neg_u = data_dict['train_neg_u']
+    # train_neg_v = data_dict['train_neg_v']
     valid_pos_u = data_dict['valid_pos_u']
     valid_pos_v = data_dict['valid_pos_v']
-    valid_neg_u = data_dict['valid_neg_u']
-    valid_neg_v = data_dict['valid_neg_v']
+    # valid_neg_u = data_dict['valid_neg_u']
+    # valid_neg_v = data_dict['valid_neg_v']
     test_pos_u = data_dict['test_pos_u']
     test_pos_v = data_dict['test_pos_v']
     test_neg_u = data_dict['test_neg_u']
@@ -31,28 +31,37 @@ if __name__ == '__main__':
     feat_dim = data_dict['feat_dim']
     valid_authors = data_dict['valid_authors']
     test_authors = data_dict['test_authors']
+    graph = data_dict['graph']
 
     print("Training...")
 
     # model
-    model = LightGCN2(None, num_author, feat_dim, 64, 1)
+    # model = LightGCN2(None, num_author, feat_dim, 64, 1)
+    model = LightGCN2(None, num_author, feat_dim, 64, 4)
     # optimizer
-    optimizer = t.optim.Adam(model.parameters(), lr=0.005)
+    optimizer = t.optim.Adam(model.parameters(), lr=0.003)
     train_loss = []
     valid_loss = []
+    valid_recall = []
 
     # train
-    for epoch in tqdm(range(4)):
+    for epoch in tqdm(range(50)):
         print(f"Epoch: {epoch}")
         model.train()
         optimizer.zero_grad()
         author_embeddings, paper_embeddings = model(train_graph, paper_feat)
 
+        # sample train pos and neg edges (5%)
+        train_pos_u_sample = random.sample(range(train_pos_u.shape[0]), int(0.05 * train_pos_u.shape[0]))
+        train_pos_u_sample = train_pos_u[train_pos_u_sample]
+        train_pos_v_sample = train_pos_v[train_pos_u_sample]
+        train_neg_u_sample, train_neg_v_sample = sample_negative_edges(graph, train_pos_u_sample, train_pos_v_sample)
+        
         # convert pos and neg ids to embeddings
-        pos_author_embeddings = author_embeddings[train_pos_u]
-        pos_paper_embeddings = paper_embeddings[train_pos_v]
-        neg_author_embeddings = author_embeddings[train_neg_u]
-        neg_paper_embeddings = paper_embeddings[train_neg_v]
+        pos_author_embeddings = author_embeddings[train_pos_u_sample]
+        pos_paper_embeddings = paper_embeddings[train_pos_v_sample]
+        neg_author_embeddings = author_embeddings[train_neg_u_sample]
+        neg_paper_embeddings = paper_embeddings[train_neg_v_sample]
 
         # BPR loss
         pos_score = t.sum(pos_author_embeddings * pos_paper_embeddings, dim=1)
@@ -67,19 +76,26 @@ if __name__ == '__main__':
         # validation
         model.eval()
         with t.no_grad():
+            # sample neg edges
+            valid_neg_u, valid_neg_v = sample_negative_edges(graph, valid_pos_u, valid_pos_v)
             # cosine similarity
             pos_score = t.sum(author_embeddings[valid_pos_u] * paper_embeddings[valid_pos_v], dim=1)
             neg_score = t.sum(author_embeddings[valid_neg_u] * paper_embeddings[valid_neg_v], dim=1)
             loss = -t.mean(t.log(t.sigmoid(pos_score - neg_score)))
 
             valid_loss.append(loss.item())
-            val_sample = random.sample(range(valid_authors.shape[0]), 5000)
+            val_sample = random.sample(range(valid_authors.shape[0]), 1000)
             recK = recallK(valid_authors[val_sample], pos_score, valid_pos_u, neg_score, valid_neg_u, 10)
+            valid_recall.append(recK)
             print(f"Valid Loss: {loss.item()}, Recall: {recK}")
 
     # plot loss
     plt.plot(train_loss, label='train')
     plt.plot(valid_loss, label='valid')
+    plt.plot(valid_recall, label='recall')
+    plt.xlabel('Epoch')
+    plt.legend()
+    plt.savefig('loss.png')
 
     # test
     model.eval()

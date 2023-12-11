@@ -20,6 +20,22 @@ def sample_negative_edges(bipartite_graph, pos_u, pos_v):
     negative_edges = list(zip(*negative_edges))
     return t.tensor(negative_edges[0]), t.tensor(negative_edges[1])
 
+def sample_negative_edges2(bipartite_graph, pos_u, pos_v):
+    u = bipartite_graph.nodes('author')
+    v = bipartite_graph.nodes('paper')
+
+    # Determine the number of negative edges to sample
+    num_edges = len(pos_u)
+    
+    # Randomly select negative nodes
+    negative_nodes = t.cat([v, u])[t.randint(0, len(v) + len(u), (num_edges,))]
+    
+    # Create negative edges
+    negative_edges = t.stack([pos_u, negative_nodes]) if t.arange(num_edges) % 2 == 0 else t.stack([negative_nodes, pos_v])
+    
+    return negative_edges[0], negative_edges[1]
+
+
 def load_data():
     print("Loading data...")
     # load ogb data
@@ -36,13 +52,14 @@ def load_data():
     train_size, valid_size, test_size = int(train_percent * len(eids)), int(valid_percent * len(eids)), len(eids) - int(train_percent * len(eids)) - int(valid_percent * len(eids))
     train_eids, valid_eids, test_eids = t.split(eids, [train_size, valid_size, test_size])
     print(f"train_size: {train_size}, valid_size: {valid_size}, test_size: {test_size}")
-    neg_u, neg_v = sample_negative_edges(graph, u, v)
+    # neg_u, neg_v = sample_negative_edges(graph, u, v)
     train_pos_u, train_pos_v = u[train_eids], v[train_eids]
     valid_pos_u, valid_pos_v = u[valid_eids], v[valid_eids]
     test_pos_u, test_pos_v = u[test_eids], v[test_eids]
-    train_neg_u, train_neg_v = neg_u[train_eids], neg_v[train_eids]
-    valid_neg_u, valid_neg_v = neg_u[valid_eids], neg_v[valid_eids]
-    test_neg_u, test_neg_v = neg_u[test_eids], neg_v[test_eids]
+    # train_neg_u, train_neg_v = neg_u[train_eids], neg_v[train_eids]
+    # valid_neg_u, valid_neg_v = neg_u[valid_eids], neg_v[valid_eids]
+    # test_neg_u, test_neg_v = neg_u[test_eids], neg_v[test_eids]
+    test_neg_u, test_neg_v = sample_negative_edges(graph, test_pos_u, test_pos_v)
 
     author_ids = graph.nodes('author')
     paper_ids = graph.nodes('paper')
@@ -50,12 +67,12 @@ def load_data():
     # get the embedding ids
     train_pos_u = author_ids[train_pos_u]
     train_pos_v = paper_ids[train_pos_v]
-    train_neg_u = author_ids[train_neg_u]
-    train_neg_v = paper_ids[train_neg_v]
+    # train_neg_u = author_ids[train_neg_u]
+    # train_neg_v = paper_ids[train_neg_v]
     valid_pos_u = author_ids[valid_pos_u]
     valid_pos_v = paper_ids[valid_pos_v]
-    valid_neg_u = author_ids[valid_neg_u]
-    valid_neg_v = paper_ids[valid_neg_v]
+    # valid_neg_u = author_ids[valid_neg_u]
+    # valid_neg_v = paper_ids[valid_neg_v]
     test_pos_u = author_ids[test_pos_u]
     test_pos_v = paper_ids[test_pos_v]
     test_neg_u = author_ids[test_neg_u]
@@ -75,7 +92,7 @@ def load_data():
     # valid graph
     valid_graph = dgl.edge_subgraph(graph, t.cat([train_eids, valid_eids], dim=0), relabel_nodes=False)
     # test graph
-    test_graph = graph
+    test_graph = graph.clone()
     num_author = train_graph.number_of_nodes('author')
     num_paper = train_graph.number_of_nodes('paper')
     print(f"num_author: {num_author}, num_paper: {num_paper}")
@@ -92,12 +109,12 @@ def load_data():
         'test_graph': test_graph,
         'train_pos_u': train_pos_u,
         'train_pos_v': train_pos_v,
-        'train_neg_u': train_neg_u,
-        'train_neg_v': train_neg_v,
+        # 'train_neg_u': train_neg_u,
+        # 'train_neg_v': train_neg_v,
         'valid_pos_u': valid_pos_u,
         'valid_pos_v': valid_pos_v,
-        'valid_neg_u': valid_neg_u,
-        'valid_neg_v': valid_neg_v,
+        # 'valid_neg_u': valid_neg_u,
+        # 'valid_neg_v': valid_neg_v,
         'test_pos_u': test_pos_u,
         'test_pos_v': test_pos_v,
         'test_neg_u': test_neg_u,
@@ -106,7 +123,8 @@ def load_data():
         'num_author': num_author,
         'num_paper': num_paper,
         'feat_dim': feat_dim,
-        'valid_authors':valid_authors,
-        'test_authors':test_authors
+        'valid_authors': valid_authors,
+        'test_authors': test_authors,
+        'graph': graph
     }
     return return_dict
