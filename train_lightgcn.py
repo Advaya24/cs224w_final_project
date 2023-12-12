@@ -93,20 +93,27 @@ if __name__ == '__main__':
             valid_loss.append(loss.item())
             print(f"Valid Loss: {loss.item()}")
             val_sample = random.sample(range(valid_papers.shape[0]), 5000)
+            recK = recallK(valid_papers[val_sample], pos_score, valid_pos_v, neg_score, valid_neg_v, list(valid_recall.keys()))
             for k in valid_recall.keys():
-                recK = recallK(valid_papers[val_sample], pos_score, valid_pos_u, neg_score, valid_neg_u, k)
-                valid_recall[k].append(recK)
-                print(f"Recall@{k}: {recK}")
+                valid_recall[k].append(recK[k])
+            print(f"Recall@{k}: {recK}")
 
     # plot loss
     plt.plot(train_loss, label='Train Loss')
     plt.plot(valid_loss, label='Valid Loss')
     plt.xlabel('Epoch')
-    for k in valid_recall.keys():
-        plt.plot(valid_recall[k], label=f'Valid Recall@{k}')
+    plt.ylabel('Loss')
     plt.title(f'Loss curve for LightGCN with {num_layers} GCN layers')
     plt.legend()
     plt.savefig(f'loss_{num_layers}.png')
+    plt.clf()
+    for k in valid_recall.keys():
+        plt.plot(valid_recall[k], label=f'Valid Recall@{k}')
+    plt.xlabel('Epoch')
+    plt.ylabel('Recall')
+    plt.title(f'Recall curve for LightGCN with {num_layers} GCN layers')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper right')
+    plt.savefig(f'recall_{num_layers}.png')
 
     # test
     model.eval()
@@ -119,5 +126,6 @@ if __name__ == '__main__':
         loss = -t.mean(t.log(t.sigmoid(pos_score - neg_score)))
         print(f"Test Loss: {loss.item()}")
         test_sample = random.sample(range(test_papers.shape[0]), min(10000, test_papers.shape[0]))
-        recK = recallK(test_papers[test_sample], pos_score, test_pos_u, neg_score, test_neg_u, 10)
-        print(f"Test Recall: {recK}")
+        recK = recallK(test_papers[test_sample], pos_score, test_pos_v, neg_score, test_neg_v, list(valid_recall.keys()))
+        for k in valid_recall.keys():
+            print(f"Recall@{k}: {recK[k]}")

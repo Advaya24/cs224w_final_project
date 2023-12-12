@@ -1,3 +1,4 @@
+import pdb
 import numpy as np
 import torch as t
 from tqdm import tqdm
@@ -24,9 +25,9 @@ def recallK_author_to_paper(valid_authors, pos_score, valid_pos_u, neg_score, va
     print(f"Fraction of authors used {len(recs)/valid_authors.shape[0]}")
     return np.mean(recs)
 
-def recallK(valid_papers, pos_score, valid_pos_v, neg_score, valid_neg_v, k):
+def recallK(valid_papers, pos_score, valid_pos_v, neg_score, valid_neg_v, k_list):
     # u is author, v is paper
-    recs = []
+    recs = {k: [] for k in k_list}
     for paper in tqdm(valid_papers):
         pos_authors = (valid_pos_v == paper)
         neg_authors = (valid_neg_v == paper)
@@ -36,15 +37,15 @@ def recallK(valid_papers, pos_score, valid_pos_v, neg_score, valid_neg_v, k):
         num_pos = curr_pos_score.shape[0]
         all_scores = t.cat([curr_pos_score, curr_neg_score], dim=0)
 
-        # # assert all_scores.shape == (t.sum(pos_papers) + t.sum(neg_papers),)
-        # if k > all_scores.shape[0]:
-        #     continue
-
-        # recall at k only makes sense if there are at least k positive examples
-        if num_pos < k:
-            continue
-
-        topk_indices = t.topk(all_scores, k)[1]
-        recs.append((topk_indices < num_pos).sum() / num_pos)
-    print(f"Fraction of papers used {len(recs)/valid_papers.shape[0]}")
-    return np.mean(recs)
+        for k in k_list:
+            # recall at k only makes sense if there are at least k positive examples
+            if num_pos >= k:
+                topk_indices = t.topk(all_scores, k)[1]
+                recs[k].append((topk_indices < num_pos).sum() / num_pos)
+            else:
+                if k == 1:
+                    pdb.set_trace()
+                continue
+    for k in k_list:
+        print(f"Fraction of papers used for {k}: {len(recs[k])/valid_papers.shape[0]}")
+    return {k: np.mean(recs[k]) for k in k_list}
