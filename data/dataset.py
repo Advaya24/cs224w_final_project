@@ -223,12 +223,12 @@ def validate(model,val_loader):
 
         op=model(sub_inp_undir,None,node_feats,sub_pred_undir)
         op=op[:(op.shape[0]//2)] #because symmetric edges
-        recall_k=authors.shape[0]
+        recall_k=int(np.ceil(authors.shape[0]*1.5))
         ###Recall@K#####
         pred_edges=torch.topk(op[:,0],recall_k)[1]
         pred_authors=sub_pred_undir.edges()[0][pred_edges]
         # recalls.append(np.intersect1d(pred_authors,authors).shape[0]/authors.shape[0])
-        recalls.append(np.intersect1d(pred_authors,authors).shape[0]/recall_k)
+        recalls.append(np.intersect1d(pred_authors,authors).shape[0]/authors.shape[0])
 
     return np.mean(recalls)
     

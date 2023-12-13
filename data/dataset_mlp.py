@@ -6,6 +6,8 @@ from dgl import AddReverse, Compose, ToSimple
 from dgl.nn import SAGEConv
 from tqdm import tqdm
 from numpy.random import default_rng
+from copy import deepcopy
+import networkx as nx
 dataset = DglNodePropPredDataset(name = "ogbn-mag", root = 'dataset/')
 graph,labels=dataset[0]
 split_idx = dataset.get_idx_split()
@@ -16,9 +18,7 @@ valid_idx['paper']=[x for x in valid_idx['paper'] if len(graph.predecessors(x,et
 # sg, inverse_indices = dgl.khop_subgraph(g, {'game': 0}, k=2)
 
 
-k_hops=3
-paper_node_id=10
-author_node_id=100
+k_hops=5
 # Apply the mask to the original graph
 train_graph= dgl.remove_nodes(graph, valid_idx['paper'],ntype='paper')
 # train_graph= dgl.remove_nodes(train_graph, train_graph.nodes('institution'),ntype='institution')
@@ -161,20 +161,51 @@ class ValPaperNbrSampler(dgl.dataloading.Sampler):
         author_to_del=authors[:-1]
         edge_ids_to_del=sg.edge_ids(author_to_del,paper_in_subg.repeat(len(author_to_del)),etype='writes')
         sg_model_inp=dgl.remove_edges(sg, edge_ids_to_del,etype='writes')
-        sg_to_pred=sg
+        # sg_model_inp=deepcopy(sg)
+        sg_to_pred=deepcopy(sg)
         for etype in sg.etypes:
             sg_to_pred=dgl.remove_edges(sg_to_pred, sg.edges(form='eid',etype=etype),etype=etype)
         all_authors=sg.nodes('author')
-        sg_to_pred.add_edges(all_authors,paper_in_subg.repeat(len(all_authors)),etype='writes')
-        return sg_model_inp,sg_to_pred,invlabel['paper'][0],author_to_del
+        non_paper_authors=np.setdiff1d(all_authors,author_to_del)
+        neg_authors=np.random.choice(non_paper_authors,min(len(author_to_del)*2,non_paper_authors.shape[0]),replace=False)
+        authors_to_add=np.concatenate([neg_authors,author_to_del])
+        sg_to_pred.add_edges(authors_to_add,paper_in_subg.repeat(len(authors_to_add)),etype='writes')
+        return sg_model_inp,sg_to_pred,invlabel['paper'][0],author_to_del,authors[-1]
         #we want to pass sg_del through the model and see performance on edge_ids_to_del edes of sg
+
+class ValPaperNbrSamplerLoss(dgl.dataloading.Sampler):
+    def __init__(self,khops):
+        super().__init__()
+        self.khops=khops
+        
+    def sample(self,graph,indices):
+        #g is full graph. It returns the index in indices and the author nodes with which edge exists in reality
+        #returns, OG subgraph, sub graph to do MSG passing on, correct edges 
+        assert indices.shape[0]==1
+        sg,invlabel=dgl.khop_subgraph(graph,{'paper':[indices[0]]},self.khops)
+        paper_in_subg=invlabel['paper']
+        authors=sg.predecessors(paper_in_subg[0],etype='writes')
+        author_to_del=authors[:-1]
+        edge_ids_to_del=sg.edge_ids(author_to_del,paper_in_subg.repeat(len(author_to_del)),etype='writes')
+        sg_model_inp=dgl.remove_edges(sg, edge_ids_to_del,etype='writes')
+        # sg_model_inp=deepcopy(sg)
+        sg_pos=deepcopy(sg)
+        sg_neg=deepcopy(sg)
+        for etype in sg.etypes:
+            sg_pos=dgl.remove_edges(sg_pos, sg.edges(form='eid',etype=etype),etype=etype)
+            sg_neg=dgl.remove_edges(sg_neg, sg.edges(form='eid',etype=etype),etype=etype)
+        all_authors=sg.nodes('author')
+        neg_authors=np.random.choice(np.setdiff1d(all_authors,author_to_del),len(author_to_del))
+        sg_pos.add_edges(author_to_del,paper_in_subg.repeat(len(author_to_del)),etype='writes')
+        sg_neg.add_edges(neg_authors,paper_in_subg.repeat(len(neg_authors)),etype='writes')
+        return sg_model_inp,sg_pos,sg_neg,#invlabel['paper'][0],author_to_del
 
 
 coauth_train_loader = dgl.dataloading.DataLoader(
         train_graph,
         train_graph.nodes('paper'),
         PaperNbrSampler(2,k_hops),
-        batch_size=8,
+        batch_size=1,
         shuffle=True,
         num_workers=0,
         device='cpu',
@@ -184,6 +215,16 @@ coauth_val_loader = dgl.dataloading.DataLoader(
         graph,
         valid_idx['paper'],
         ValPaperNbrSampler(k_hops),
+        batch_size=1,
+        shuffle=True,
+        num_workers=0,
+        device='cpu',
+    )
+
+coauth_val_loader_loss = dgl.dataloading.DataLoader(
+        graph,
+        valid_idx['paper'],
+        ValPaperNbrSamplerLoss(k_hops),
         batch_size=1,
         shuffle=True,
         num_workers=0,
@@ -200,18 +241,22 @@ def find_node_ids(node_type_list,num_node_func,node_type,node_ids):
         i+=1
     return ans
 
-
+def get_avg_num_shortest_paths(graph,source,targets):
+    g1=graph.to_networkx()
+    return np.mean([len([x for x in nx.all_shortest_paths(g1,source=source,target=i)]) for i in targets])
 
 def validate(model,val_loader):
     #We predict the as many authors as there are actually, and then we see how many are correct
     model.eval()
     recalls=[]
-    for i, (subg_inp,sg_to_pred,paper,authors) in enumerate(val_loader):
+    for i, (subg_inp,sg_to_pred,paper,authors,conn_author) in enumerate(val_loader):
         # print(input_nodes)
         if i>50:
             break
         paper_node_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'paper',paper)
         author_node_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'author',authors)
+
+        conn_author_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'author',conn_author)
 
         subg_pred_homo=dgl.to_homogeneous(sg_to_pred)
         subg_inp_homo=dgl.to_homogeneous(subg_inp)
@@ -220,11 +265,11 @@ def validate(model,val_loader):
 
         node_feats=torch.zeros((subg_pred_homo.num_nodes(),len(subg_inp.ntypes))) #one hot encoding of node type
         node_feats[torch.arange(subg_pred_homo.num_nodes()),subg_pred_homo.ndata['_TYPE']]=1
-        edge_ids_to_predict=sub_pred_undir.edge_ids(author_node_homo,paper_node_homo.repeat(len(author_node_homo)))
+        # edge_ids_to_predict=sub_pred_undir.edge_ids(author_node_homo,paper_node_homo.repeat(len(author_node_homo)))
 
         op=model(sub_inp_undir,None,node_feats,sub_pred_undir)
         op=op[:(op.shape[0]//2)] #because symmetric edges
-        recall_k=authors.shape[0]
+        recall_k=min(int(np.ceil(authors.shape[0]*1.5)),10)
         ###Recall@K#####
         # import pdb;pdb.set_trace()
         if len(op.shape)>1:
@@ -232,10 +277,47 @@ def validate(model,val_loader):
         else:
             pred_edges=torch.topk(op,recall_k)[1]
         pred_authors=sub_pred_undir.edges()[0][pred_edges]
+        # import pdb;pdb.set_trace()
+        # recalls.append(get_avg_num_shortest_paths(sub_inp_undir,conn_author_homo.item(),pred_authors))        
+
         # recalls.append(np.intersect1d(pred_authors,authors).shape[0]/authors.shape[0])
-        recalls.append(np.intersect1d(pred_authors,author_node_homo).shape[0]/recall_k)
+
+        # shortest_dist=dgl.shortest_dist(sub_inp_undir,conn_author_homo)
+        # shortest_dist[shortest_dist==-1]=shortest_dist.max()+1
+        # recalls.append(torch.mean((shortest_dist[pred_authors]).double()).detach().numpy())
+        recalls.append(np.intersect1d(pred_authors,author_node_homo).shape[0]/authors.shape[0])
 
     return np.mean(recalls)
+
+def validate_w_loss(model,val_loader,loss_func):
+    #We predict the as many authors as there are actually, and then we see how many are correct
+
+    model.eval()
+    losses=[]
+    for i, (subg_inp,sg_pos,sg_neg) in enumerate(val_loader):
+        # print(input_nodes)
+        if i>50:
+            break
+        # paper_node_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'paper',paper)
+        # author_node_homo=find_node_ids(subg_inp.ntypes,subg_inp.num_nodes,'author',authors)
+
+        subg_pos_homo=dgl.to_homogeneous(sg_pos)
+        subg_neg_homo=dgl.to_homogeneous(sg_neg)
+        subg_inp_homo=dgl.to_homogeneous(subg_inp)
+        sub_pos_undir=dgl.add_reverse_edges(subg_pos_homo)
+        sub_neg_undir=dgl.add_reverse_edges(subg_neg_homo)
+        sub_inp_undir=dgl.add_reverse_edges(subg_inp_homo)
+
+        node_feats=torch.zeros((subg_inp_homo.num_nodes(),len(subg_inp.ntypes))) #one hot encoding of node type
+        node_feats[torch.arange(subg_inp_homo.num_nodes()),subg_inp_homo.ndata['_TYPE']]=1
+        # edge_ids_to_predict=sub_pred_undir.edge_ids(author_node_homo,paper_node_homo.repeat(len(author_node_homo)))
+
+        pos_score,neg_score=model(sub_inp_undir,sub_neg_undir,node_feats,sub_pos_undir)
+        loss = loss_func(pos_score, neg_score)
+        losses.append(loss.item())
+        
+
+    return np.mean(losses)
     
 
 class DotProductPredictor(torch.nn.Module):
@@ -286,6 +368,7 @@ def construct_negative_graph(graph, k):
     neg_dst = torch.randint(0, graph.num_nodes(), (len(src) * k,))
     return dgl.graph((neg_src, neg_dst), num_nodes=graph.num_nodes())
 
+
 def construct_input_positive_graph(graph,k):
     #expects undirected graph
     #remove k distinct edges, so total 2k removal counting reverse edge
@@ -298,15 +381,20 @@ def construct_input_positive_graph(graph,k):
     graph_pos=dgl.add_edges(graph_pos,src[eids],dst[eids])
     return graph_inp,graph_pos
 
-def construct_input_positive_graph_author_specific(graph,authors,papers):
-    author_paper_homo_edge_ids=sub_homo_undir.edge_ids(authors,papers)
-    author_paper_homo_edge_ids=torch.concatenate([author_paper_homo_edge_ids,author_paper_homo_edge_ids+sub_homo_undir.number_of_edges()//2])
+def construct_all_inputs(graph,authors,papers,authors_neg,papers_neg):
+    author_paper_homo_edge_ids=graph.edge_ids(authors,papers)
+    author_paper_homo_edge_ids=torch.concatenate([author_paper_homo_edge_ids,author_paper_homo_edge_ids+graph.number_of_edges()//2])    
     graph_inp=dgl.remove_edges(graph, author_paper_homo_edge_ids)
 
     graph_pos=dgl.remove_edges(graph,torch.arange(graph.number_of_edges())) #remove all edges
     graph_pos=dgl.add_edges(graph_pos,authors,papers)
     graph_pos=dgl.add_edges(graph_pos,papers,authors)
-    return graph_inp,graph_pos    
+
+    graph_neg=dgl.remove_edges(graph,torch.arange(graph.number_of_edges())) #remove all edges
+    graph_neg=dgl.add_edges(graph_neg,authors_neg,papers_neg)
+    graph_neg=dgl.add_edges(graph_neg,papers_neg,authors_neg)
+    # import pdb;pdb.set_trace()
+    return graph_inp,graph_pos,graph_neg   
     
 
 class Model(torch.nn.Module):
@@ -315,6 +403,7 @@ class Model(torch.nn.Module):
         # self.sage = SAGE(in_features, hidden_features, out_features)
         self.sage1=SAGEConv(in_features, hidden_features, 'mean')
         self.sage2=SAGEConv(hidden_features, hidden_features, 'mean')
+        self.sage3=SAGEConv(hidden_features, hidden_features, 'mean')
         # self.pred = DotProductPredictor()
         self.pred=MLPPredictor(hidden_features)
         self.bn=torch.nn.BatchNorm1d(hidden_features, eps=1)
@@ -324,10 +413,13 @@ class Model(torch.nn.Module):
             pos_g=g
         h = self.sage1(g, x)
         h=self.sage2(g,h)
-        h=self.bn(h)
+        h=self.sage3(g,h)
+        # h=self.bn(h)
 
-        if self.training:
+        if pos_g is not None and neg_g is not None:
             return self.pred(pos_g, h), self.pred(neg_g, h)
+        elif neg_g is not None:
+            return self.pred(neg_g,h)
         else:
             return self.pred(pos_g,h)
 
@@ -348,21 +440,27 @@ opt = torch.optim.Adam(model.parameters())
 # validate(model,coauth_val_loader)
 # (subg, ppair, npair)    
 
-def get_author_paper_pairs(graph):
+def get_author_paper_pairs(graph,neg=False):
     #graph is hetero
-    src,dst=subg.edges(etype='writes')
+    src,dst=graph.edges(etype='writes')
     num_writes=src.shape[0]
     rng = default_rng()
     eids = rng.choice(num_writes, size=num_writes//2, replace=False)
     authors=src[eids]
-    papers=dst[eids]
+    if neg:
+        papers=dst[np.random.permutation(eids)]
+    else:
+        papers=dst[eids]
     return authors,papers
+
 
 
 for i, (subg) in (pbar:= tqdm(enumerate(coauth_train_loader))):
     # print(input_nodes)
     model.train()
     author_pred,paper_pred=get_author_paper_pairs(subg)
+    author_pred_neg,paper_pred_neg=get_author_paper_pairs(subg,neg=True)
+
     sub_homo=dgl.to_homogeneous(subg)
     sub_homo_undir=dgl.add_reverse_edges(sub_homo)
     node_feats=torch.zeros((subg.num_nodes(),len(subg.ntypes))) #one hot encoding of node type
@@ -370,25 +468,27 @@ for i, (subg) in (pbar:= tqdm(enumerate(coauth_train_loader))):
     
     author_pred_homo=find_node_ids(subg.ntypes,subg.num_nodes,'author',author_pred)
     paper_pred_homo=find_node_ids(subg.ntypes,subg.num_nodes,'paper',paper_pred)
-    
 
-    num_edges_for_loss=author_pred_homo.shape[0]
-    negative_graph = construct_negative_graph(sub_homo_undir,  num_edges_for_loss)
-    input_graph,positive_graph=construct_input_positive_graph_author_specific(sub_homo_undir,author_pred_homo,paper_pred_homo)
-    # import pdb;pdb.set_trace()
+    author_pred_neg_homo=find_node_ids(subg.ntypes,subg.num_nodes,'author',author_pred_neg)
+    paper_pred_neg_homo=find_node_ids(subg.ntypes,subg.num_nodes,'paper',paper_pred_neg)
+    
+    # num_edges_for_loss=author_pred_homo.shape[0]
+    input_graph,positive_graph,negative_graph=construct_all_inputs(sub_homo_undir,author_pred_homo,paper_pred_homo,author_pred_neg_homo,paper_pred_neg_homo)
+    
 
 
     # num_edges_for_loss=sub_homo_undir.number_of_edges()//6 #removing 2/6 of distinct edges using 2/3rd of distinct edegs to classify
     # negative_graph = construct_negative_graph(sub_homo_undir,  num_edges_for_loss)
     # input_graph,positive_graph=construct_input_positive_graph(sub_homo_undir,num_edges_for_loss)
     pos_score, neg_score = model(input_graph, negative_graph, node_feats,positive_graph)
-    loss = compute_loss_CE(pos_score, neg_score)
+    loss = compute_loss(pos_score, neg_score)
     opt.zero_grad()
     loss.backward()
     opt.step()
     pbar.set_description(f"Loss:{loss.item():.4f},Edges:{input_graph.number_of_edges()}")
     if (i+1)%50==0:
         print(validate(model,coauth_val_loader))
+        # print(validate_w_loss(model,coauth_val_loader_loss,compute_loss))
     
     #convert graph to homogenous for link prediction, say subg=dgl.to_hetero(subh)
     #subg.ntypes gives ['author', 'field_of_study', 'institution', 'paper'] this is mapped to [0,1,2,3]
